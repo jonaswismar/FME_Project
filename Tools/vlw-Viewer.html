@@ -1,0 +1,707 @@
+<!doctype html>
+<html class="h-100">
+
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>VLW viewer</title>
+	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-+0n0xVW2eSR5OomGNYDnhzAbDsOXxcvSN1TPprVMTNDbiYZCxYbOOl7+AMvyTG2x" crossorigin="anonymous">
+	<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js" integrity="sha384-gtEjrD/SeCtmISkJkNUaaKMoLD0//ElJ19smozuHV6z3Iehds+3Ulb9Bn9Plx0x4" crossorigin="anonymous"></script>
+	<script src="https://cdn.jsdelivr.net/npm/mustache@4.2.0/mustache.min.js"></script>	
+</head>
+
+<body class="w-100 h-100 p-3">
+
+	<main id="container" class="w-100 h-100 border rounded p-3 position-relative">
+
+		<div class="float-end">
+			<div class="form-check">
+				<input class="form-check-input" type="checkbox" id="preview-glyphs">
+				<label class="form-check-label" for="preview-glyphs">
+					Preview glyphs (slow!) 
+				</label>
+			</div>
+		</div>
+		<h1 id="cover">Drop vlw file here.</h1>
+
+		<div class="progress d-none">
+			<div id="progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+		</div>
+		
+		<div id="diagnosis" class="d-none">
+
+			<hr>
+
+			<section class="row">
+				<div class="col-md-4">
+					<h2>File header</h2>
+					<dl id="file-header" class="row">
+						<dt class="col-sm-3">Glyph count</dt>
+						<dd class="col-sm-9"><output name="glyphCount">Parsing...</output></dd>
+						<dt class="col-sm-3">Version</dt>
+						<dd class="col-sm-9"><output name="version">Parsing...</output></dd>
+						<dt class="col-sm-3">Font size</dt>
+						<dd class="col-sm-9"><output name="fontSize">Parsing...</output></dd>
+						<dt class="col-sm-3">(Reserved)</dt>
+						<dd class="col-sm-9"><output name="reserved">Parsing...</output></dd>
+						<dt class="col-sm-3">Ascent</dt>
+						<dd class="col-sm-9"><output name="ascent">Parsing...</output></dd>
+						<dt class="col-sm-3">Descent</dt>
+						<dd class="col-sm-9"><output name="descent">Parsing...</output></dd>
+					</dl>
+				</div>
+				<div class="col-md-4">
+					<h2>File trailer</h2>
+					<dl id="file-trailer" class="row">
+						<dt class="col-sm-3">Font name</dt>
+						<dd class="col-sm-9"><output name="fontName">Parsing...</output></dd>
+						<dt class="col-sm-3">PostScript name</dt>
+						<dd class="col-sm-9"><output name="postScriptName">Parsing...</output></dd>
+						<dt class="col-sm-3">Smooth</dt>
+						<dd class="col-sm-9"><output name="smooth">Parsing...</output></dd>
+					</dl>
+				</div>
+				<div class="col-md-4">
+					<h2>Unicode map (BMP)</h2>
+					<canvas id="unicode-map" width="256" height="256"></canvas>
+				</div>
+			</section>
+
+			<hr>
+
+			<section class="row">
+				<div id="subset" class="col d-none">
+					<h2>Create subset</h2>
+					<div class="mb-3">
+						<label for="subset-ranges" class="form-label">Codepoints</label>
+						<input type="text" class="form-control" id="subset-ranges" value="">
+						<div class="form-text">
+							Comma separated hexadecimal unicode codepoints, <code>A-B</code> to range.
+							e.g. <code>21-7F, A9, FF00-FFFF</code>.
+						</div>
+					</div>
+					<div>
+						<button id="subset-generate" type="button" class="btn btn-primary" disabled>
+							Download subset VLW
+						</button>
+						<span class="form-text">
+							Glyph count: <strong><output id="subset-count">-</output></strong>,
+							File size: <strong><output id="subset-size">-</output></strong>
+						</span>
+					</div>
+				</div>
+			</section>
+
+			<hr>
+
+			<section>
+				<h2>Glyphs</h2>
+				<div id="glyphs" class="d-flex flex-wrap">
+				</div>
+				<template id="glyph">
+					<div class="">
+						<canvas width="160" height="160"></canvas>
+						<p class="text-center"></p>
+					</div>
+				</template>
+			</section>
+
+		</div>
+
+	</section>
+
+	<script>
+
+		class Strings {
+			static equalsIgnoreCase(x, y) {
+				return x.localeCompare(y, 'en-US', { sensitivity: 'accent' }) === 0
+			}
+		}
+	
+		class Events {
+
+			/**
+			 * @callback action
+			 */
+
+			/**
+			 * Create promise based on events
+			 * @param {EventTarget} target
+			 * @param {string|string[]} fullfilledEventTypes
+			 * @param {string|string[]} rejectedEventTypes
+			 * @param {action|null} [action = null]
+			 * @returns {Promise<Event>}
+			 */
+			static wait(target, fullfilledEventTypes, rejectedEventTypes, action = null) {
+
+				const fullfilledEvents = [].concat(fullfilledEventTypes)
+				const rejectedEvents = [].concat(rejectedEventTypes)
+
+				const p = new Promise((resolve, reject) => {
+
+					const resolver = e => {
+						resolve([e, resolver])
+					}
+
+					// install hook
+					for (const type of fullfilledEvents) {
+						target.addEventListener(type, resolver)
+					}
+					for (const type of rejectedEvents) {
+						target.addEventListener(type, resolver)
+					}
+
+				}).then(d => {
+
+					const [e, resolver] = d
+
+					// uninstall hook
+					for (const type of fullfilledEvents) {
+						target.removeEventListener(type, resolver)
+					}
+					for (const type of rejectedEvents) {
+						target.removeEventListener(type, resolver)
+					}
+
+					const c = Strings.equalsIgnoreCase.bind(null, e.type)
+					return fullfilledEvents.some(c) ? Promise.resolve(e) : Promise.reject(e)
+
+				})
+
+				action && action()
+
+				return p
+
+			}
+
+		}
+
+		class Files {
+
+			/** 
+			 * @callback FileCallback
+			 * @param {File} file
+			 */
+
+			/**
+			 * @param {Element} element
+			 * @param {string} actionClass
+			 * @param {FileCallback} callback
+			 */
+			static accept(element, actionClass, callback) {
+
+				const readonlyEffects = new Set(['copy', 'copyLink', 'copyMove', 'link', 'linkMove', 'all'])
+
+				const isFile = d => readonlyEffects.has(d.effectAllowed) && d.types.some(t => t === 'Files')
+
+				const handleDrag = e => {
+					if (isFile(e.dataTransfer)) {
+						// e.dataTransfer.dropEffect = 'all'
+						e.currentTarget.classList.add(actionClass)
+					} else {
+						// e.dataTransfer.dropEffect = 'none'
+					}
+					e.preventDefault()
+					e.stopPropagation()
+				}
+
+				element.addEventListener('dragenter', handleDrag)
+				element.addEventListener('dragover', handleDrag)
+
+				element.addEventListener('dragleave', e => {
+					e.currentTarget.classList.remove(actionClass)
+				})
+
+				element.addEventListener('drop', e => {
+					if (isFile(e.dataTransfer) && e.dataTransfer.files.length === 1) {
+						e.currentTarget.classList.remove(actionClass)
+						callback(e.dataTransfer.files[0])
+						e.preventDefault()
+						e.stopPropagation()
+					}
+				})
+
+			}
+
+			static download(blob, filename, mimeType = 'application/octet-stream') {
+				const a = document.createElement('a')
+				a.href = URL.createObjectURL(blob)
+				a.download = filename
+				a.type = mimeType
+				a.click()
+				URL.revokeObjectURL(a.href)
+			}
+
+		}
+		
+		//
+
+		// Visible Language Workshop
+		class VLWFont {
+
+			static HEADER_SIZE = 24
+			static METRICS_SIZE = 28
+
+			static async parse(blob) {
+				const font = new this()
+				return await font.#parse(blob)
+			}
+
+			#blob = null
+			#buffer = null
+			#view = null
+
+			// decoded
+			#header = null
+			#metrics = null
+			#trailer = null
+
+			// for fast scan
+			#characterLocations = null
+			#trailerLocation = null
+			
+			async #parse(blob) {
+				this.#blob = blob
+				this.#buffer = await blob.arrayBuffer()
+				this.#view = new DataView(this.#buffer)
+				this.#scan(this.#view)
+				return this
+			}
+
+			get header() {
+				return this.#header
+			}
+
+			get metrics() {
+				return this.#metrics
+			}
+
+			get trailer() {
+				return this.#trailer
+			}
+
+			getGlyph(codePoint) {
+				const offset = this.#characterLocations[codePoint].glyphOffset
+				const {
+					width,
+					height,
+				} = this.#metrics[codePoint]
+				return new Uint8Array(this.#buffer, offset, width * height)
+			}
+			
+			#getMetricsBlob(codePoint) {
+				const offset = this.#characterLocations[codePoint].metricsOffset
+				return this.#blob.slice(offset, offset + VLWFont.METRICS_SIZE)
+			}
+
+			#getGlyphBlob(codePoint) {
+				const {
+					glyphOffset,
+					glyphLength,
+				} = this.#characterLocations[codePoint]
+				return this.#blob.slice(glyphOffset, glyphOffset + glyphLength)
+			}
+
+			#getTrailerBlob() {
+				const {
+					offset,
+					length,
+				} = this.#trailerLocation
+				return this.#blob.slice(offset, offset + length)
+			}
+			
+			#getGlyphSize(codePoint) {
+				return this.#characterLocations[codePoint].glyphLength
+			}
+			
+			collectSubset(codePointRanges) {
+				const set = new Set()
+				codePointRanges.forEach(([from, to]) => {
+					for (let c = from; c <= to; ++c) {
+						if (c in this.#metrics) {
+							set.add(c)
+						}
+					}
+				})
+				return set
+			}
+
+			estimateSubset(codePointsSet) {
+				const codePoints = Array.from(codePointsSet)
+				const glyphCount = codePoints.length
+				const fileSize = VLWFont.HEADER_SIZE
+					+ VLWFont.METRICS_SIZE * glyphCount
+					+ codePoints.reduce((a, c) => a + this.#getGlyphSize(c), 0)
+					+ this.#trailerLocation.length
+				return {
+					glyphCount,
+					fileSize,
+				}
+			}
+
+			createSubset(codePointsSet) {
+				const codePoints = Array.from(codePointsSet)
+				if (!codePoints.length) {
+					return null
+				}
+				codePoints.sort()
+
+				// copy header with new glyph count
+				const header = this.#buffer.slice(0, 24)
+				new DataView(header).setInt32(0, codePoints.length)
+
+				const metrics = new Blob(codePoints.map(c => this.#getMetricsBlob(c)))
+				const bitmaps = new Blob(codePoints.map(c => this.#getGlyphBlob(c)))
+				const trailer = this.#getTrailerBlob()
+
+				return new Blob([header, metrics, bitmaps, trailer])
+			}
+
+
+			#scan(view) {
+
+				const header = this.#parseHeader(view)
+
+				const count = header.glyphCount
+				const metricsSet = {
+					[Symbol.iterator]: function* () {
+						yield* Object.values(this)
+					},
+				}
+				const characterLocations = {}
+
+				let glyphOffset = VLWFont.HEADER_SIZE + VLWFont.METRICS_SIZE * count
+
+				for (let c = 0; c < count; ++c) {
+					const metricsOffset = VLWFont.HEADER_SIZE + VLWFont.METRICS_SIZE * c
+					const metrics = this.#parseMetrics(view, metricsOffset)
+					const glyphLength = metrics.width * metrics.height
+					metricsSet[metrics.codePoint] = metrics
+					characterLocations[metrics.codePoint] = {
+						metricsOffset,
+						glyphOffset,
+						glyphLength,
+					}
+					glyphOffset += glyphLength
+				}
+
+				const [trailer, trailerLength] = this.#parseTrailer(view, glyphOffset)
+
+				const trailerLocation = {
+					offset: glyphOffset,
+					length: trailerLength,
+				}
+
+				this.#header = header
+				this.#metrics = Object.freeze(metricsSet)
+				this.#trailer = trailer
+
+				this.#characterLocations = characterLocations
+				this.#trailerLocation = trailerLocation
+
+			}
+
+			#parseHeader(view) {
+				const glyphCount = view.getInt32(0)
+				const version = view.getInt32(4)
+				const fontSize = view.getInt32(8)
+				const reserved = view.getInt32(12)
+				const ascent = view.getInt32(16)
+				const descent = view.getInt32(20)
+
+				return Object.freeze({
+					glyphCount,
+					version,
+					fontSize,
+					reserved,
+					ascent,
+					descent,
+				})
+			}
+
+			#parseTrailer(view, offset) {
+
+				const decodeModifiedUtf8 = typed => {
+					const decoder = new TextDecoder()
+					// TODO: NUL conversion
+					return decoder.decode(typed)
+				}
+
+				const getString = (view, offset) => {
+					const length = view.getUint16(offset)
+					const value = decodeModifiedUtf8(new Uint8Array(view.buffer, offset + 2, length))
+					return [value, 2 + length]
+				}
+
+				const [fontName, fontNameBytes] = getString(view, offset)
+				const [postScriptName, postScriptNameBytes] = getString(view, offset + fontNameBytes)
+				const smooth = Boolean(view.getUint8(offset + fontNameBytes + postScriptNameBytes))
+
+				return [
+					Object.freeze({
+						fontName,
+						postScriptName,
+						smooth,
+					}),
+					fontNameBytes + postScriptNameBytes + 1,
+				]
+
+			}
+
+			#parseMetrics(view, offset) {
+				const codePoint = view.getInt32(offset + 0)
+				const height = view.getInt32(offset + 4)
+				const width = view.getInt32(offset + 8)
+				const advanceWidth = view.getInt32(offset + 12)
+				const topSideBearing = view.getInt32(offset + 16)
+				const leftSideBearing = view.getInt32(offset + 20)
+				const reserved = view.getInt32(offset + 24)
+
+				return Object.freeze({
+					codePoint,
+					height,
+					width,
+					advanceWidth,
+					topSideBearing,
+					leftSideBearing,
+					reserved,
+				})
+			}
+
+		}
+
+		// 
+
+		const describeHeader = header => {
+			document.querySelectorAll('#file-header output').forEach(output => {
+				output.textContent = header[output.name]
+			})
+		}
+
+		const describeTrailer = trailer => {
+			document.querySelectorAll('#file-trailer output').forEach(output => {
+				output.textContent = trailer[output.name]
+			})
+		}
+
+		const drawVisualTransparent = (g, left, top, width, height, scale, origin) => {
+			for (let y = top; y < height; ++y) {
+				for (let x = left; x < width; ++x) {
+					g.fillStyle = (origin + x + y) % 2 ? 'rgb(95%, 95%, 95%)' : 'white'
+					g.fillRect(x * scale, y * scale, scale, scale)
+				}
+			}
+		}
+		
+		const drawGlyphRectagle  = (g, left, top, width, height, scale) => {
+			g.beginPath()
+			g.setLineDash([5, 3])
+			g.strokeStyle = 'blue'
+			g.rect(left * scale, top * scale, width * scale, height * scale)
+			g.stroke()
+			g.setLineDash([])
+		}
+
+		const drawCharacterRectagle  = (g, left, top, width, height, scale) => {
+			g.beginPath()
+			g.setLineDash([5, 3])
+			g.strokeStyle = 'green'
+			g.rect(left * scale, top * scale, width * scale, height * scale)
+			g.stroke()
+			g.setLineDash([])
+		}
+
+		const drawBaseline  = (g, width, ascent, scale) => {
+			g.beginPath()
+			g.strokeStyle = 'red'
+			g.moveTo(0, ascent * scale)
+			g.lineTo(width * scale, ascent * scale)
+			g.stroke()
+		}
+
+		//
+
+		let currentFont = null
+		
+		const subsetRanges = document.querySelector('#subset-ranges')
+		const subsetCount = document.querySelector('#subset-count')
+		const subsetSize = document.querySelector('#subset-size')
+		const subsetGenerate = document.querySelector('#subset-generate')
+
+		const parseRanges = ranges => {
+			if (!ranges.match(/^(?:\s*[a-fA-F0-9]{1,4}(?:\s*-\s*[a-fA-F0-9]{1,4})?\s*(?:,|$))+$/)) {
+				return null
+			}
+			return ranges
+				.replaceAll(/\s/g, '')
+				.split(',')
+				.map(range => range.split('-'))
+				.map(([from, to = from]) => [parseInt(from, 16), parseInt(to, 16)].sort((a, b) => a - b))
+		}
+
+		const updateUnicodeMap = (metrics, subset = new Set()) => {
+			const map = document.querySelector('#unicode-map').getContext('2d')
+			for (const m of metrics) {
+				const codePoint = m.codePoint
+				map.fillStyle = subset.has(codePoint) ? 'red' : 'green'
+				map.fillRect(codePoint & 0xff, codePoint >> 8, 1, 1);
+			}
+		}
+
+		subsetRanges.addEventListener('input', e => {
+
+			const ranges = parseRanges(subsetRanges.value)
+			subsetGenerate.disabled = !ranges
+
+			if (!ranges) {
+				updateUnicodeMap(currentFont.metrics)
+				return
+			}
+
+			const codePointSet = currentFont.collectSubset(ranges)
+			updateUnicodeMap(currentFont.metrics, codePointSet)
+
+			const {
+				glyphCount,
+				fileSize,
+			} = currentFont.estimateSubset(codePointSet)
+			
+			subsetCount.value = glyphCount
+			subsetSize.value = `${fileSize} bytes`
+
+			subsetGenerate.disabled = glyphCount === 0
+		}) 
+
+		subsetGenerate.addEventListener('click', e => {
+			const ranges = parseRanges(subsetRanges.value)
+			if (!ranges) {
+				return
+			}
+			const codePointSet = currentFont.collectSubset(ranges)
+			const subset = currentFont.createSubset(codePointSet)
+			Files.download(subset, 'subset.vlw')
+		}) 
+		
+		const doEvents = () => new Promise(resolve => { requestAnimationFrame(resolve) }) 
+		// const doEvents = () => new Promise(resolve => { setTimeout(resolve, 0) }) 
+
+		const parse = async file => {
+
+			const previewGlyphs = document.querySelector('#preview-glyphs').checked
+
+			const font = await VLWFont.parse(file)
+
+			describeHeader(font.header)
+			describeTrailer(font.trailer)
+
+			const progress = document.querySelector('#progress')
+
+			progress.style.width = '0%'
+			progress.parentElement.classList.remove('d-none')
+
+			const count = font.header.glyphCount
+			const ascent = font.header.ascent
+			const descent = font.header.descent
+			const lineHeight = ascent + descent
+			
+			const map = document.querySelector('#unicode-map').getContext('2d')
+			map.fillStyle = 'rgb(80%, 80%, 80%)'
+			map.fillRect(0, 0, 256, 256);
+			map.fillStyle = 'green'
+
+			const scale = 8
+			const pad = 1
+
+			const glyphs = document.querySelector('#glyphs')
+			glyphs.innerHTML = ''
+			const template = document.querySelector('#glyph').content
+
+			let transParentOrigin = 0
+
+			let c = 0
+
+			for (const metrics of font.metrics) {
+
+				progress.style.width = `${c / count * 100}%`
+				if (c % 100 === 0) {
+					await doEvents()
+				}
+				++c
+
+				const {
+					codePoint,
+					height,
+					width,
+					advanceWidth,
+					topSideBearing,
+					leftSideBearing,
+				} = metrics
+
+				map.fillRect(codePoint & 0xff, codePoint >> 8, 1, 1);
+
+				if (previewGlyphs) {
+
+					const glyph = template.cloneNode(true)
+					const canvas = glyph.querySelector('canvas')
+					glyph.querySelector('p').textContent = String.fromCodePoint(codePoint) 
+					
+					canvas.width = scale * (advanceWidth + pad * 2) + 1
+					canvas.height = scale * (lineHeight + pad * 2) + 1
+
+					const g = canvas.getContext('2d')
+					g.setTransform(1, 0, 0, 1, scale * pad + 0.5, scale * pad + 0.5)
+
+					drawVisualTransparent(g, -pad, -pad, advanceWidth + pad, lineHeight + pad, scale, transParentOrigin)
+					transParentOrigin += advanceWidth
+
+					const bitmap = font.getGlyph(codePoint)
+					let i = 0
+					for (let y = 0; y < height; ++y) {
+						for (let x = 0; x < width; ++x) {
+							const gray = 255 - bitmap[i++]
+							g.fillStyle = `rgb(${gray}, ${gray}, ${gray})`
+							g.fillRect((leftSideBearing + x) * scale, (ascent - topSideBearing + y) * scale, scale, scale)
+						}
+					}
+
+					drawGlyphRectagle(g, leftSideBearing, ascent - topSideBearing, width, height, scale)
+					drawCharacterRectagle(g, 0, 0, advanceWidth, lineHeight, scale)
+					drawBaseline(g, advanceWidth, ascent, scale)
+
+					glyphs.append(glyph)
+
+				}
+
+			}
+
+			progress.style.width = '100%'
+			progress.parentElement.classList.add('d-none')
+
+			document.querySelector('#subset').classList.remove('d-none')
+
+			currentFont = font
+
+		}
+		
+		// accept drag & drop
+		Files.accept(document.querySelector('#container'), 'border-primary', async file => {
+
+			const progress = document.querySelector('#progress')
+
+			document.querySelector('#cover').textContent = `${file.name} (${file.size} bytes)`
+			document.querySelector('#diagnosis').classList.remove('d-none')
+
+			try {
+				await parse(file)
+			} catch (e) {
+				console.error(e)
+				alert('Sorry, this file format is not supported.')
+			}
+
+		})
+
+	</script>
+
+</body>
+
+</html>
